@@ -1,35 +1,140 @@
+/*********************************
+ * FILE: Wiegand.h
+ *********************************/
+
 #ifndef _WIEGAND_H
 #define _WIEGAND_H
 
 #if defined(ARDUINO) && ARDUINO >= 100
-#include "Arduino.h"
+    #include "Arduino.h"
 #else
-#include "WProgram.h"
+    #include "WProgram.h"
 #endif
 
-class WIEGAND {
+// Defines the timeout for Wiegand data. If no new bits are received within this
+// time, it's assumed the card read is complete.
+// 25ms is a common value, but increasing it slightly for safety is fine.
+#define WIEGAND_RECEIVE_TIMEOUT_MS 25
 
-public:
-	WIEGAND();
-	void begin();
-	void begin(int pinD0, int pinD1);
-	void begin(int pinD0, int pinIntD0, int pinD1, int pinIntD1);
-	bool available();
-	unsigned long getCode();
-	int getWiegandType();
-	
-private:
-	static void ReadD0();
-	static void ReadD1();
-	static bool DoWiegandConversion ();
-	static unsigned long GetCardId (volatile unsigned long *codehigh, volatile unsigned long *codelow, char bitlength);
-	
-	static volatile unsigned long 	_cardTempHigh;
-	static volatile unsigned long 	_cardTemp;
-	static volatile unsigned long 	_lastWiegand;
-	static volatile int				_bitCount;	
-	static int				_wiegandType;
-	static unsigned long	_code;
+/*
+ * Default pins for Wiegand DATA0
+ * Must be hardware interrupt capable pins, most Arduino boards have these on pins 2 and 3
+ */
+#define WIEGAND_DEFAULT_PIN_D0 2
+
+/*
+ * Default pins for Wiegand DATA1
+ * Must be hardware interrupt capable pins, most Arduino boards have these on pins 2 and 3
+ */
+#define WIEGAND_DEFAULT_PIN_D1 3
+
+#define ASCII_ESCAPE_KEY         0x1b
+#define ASCII_ENTER_KEY          0x0d
+#define KEYPAD_ASTERISK_KEY      0x0b
+#define KEYPAD_OCTOTHORPE_KEY    0x0a
+
+/*
+ * Wiegand Protocol Library for Arduino
+ */
+class Wiegand {
+
+    public:
+
+        /*
+         * Constructor
+         */
+        Wiegand();
+
+        /*
+         * Initializes the Wiegand Reader, sets input pins, & adds interrupt listeners.
+         * Uses WIEGAND_DEFAULT_PIN_D0 and WIEGAND_DEFAULT_PIN_D1 as input pins.
+         *
+         * If you want to use different pins, use the begin(pinD0, pinD1) overload instead.
+         */
+        void begin();
+
+        /*
+         * Initializes the Wiegand Reader, sets input pins, & adds interrupts to the falling edge.
+         *
+         * @param pinD0 Pin number for Wiegand DATA0
+         * @param pinD1 Pin number for Wiegand DATA1
+         *
+         * This function should only be called once, generally during setup().
+         */
+        void begin(int pinD0, int pinD1);
+
+        /*
+         * Checks if a Wiegand code is available.
+         *
+         * A non-blocking method that will return true when a full Wiegand code has been
+         * received and validated.
+         *
+         * @return true if a Wiegand code is available, false otherwise.
+         */
+        bool available();
+
+        /*
+         * Resets the Wiegand state machine and clears any stored data.
+         */
+        static void reset();
+
+        /*
+         * Gets the value of the last received Wiegand code.
+         *
+         * @return The last received Wiegand code as an unsigned long.
+         */
+        unsigned long getCode();
+
+        /*
+         * Gets the type of the last received Wiegand code.
+         *
+         * @return The type of the last received Wiegand code as an integer.
+         */
+        int getWiegandType();
+
+        /*
+         * Gets the card ID from the last received Wiegand code.
+         *
+         * @return The card ID as an integer.
+         */
+        int getBitCount() { return _bitCount; }
+
+    private:
+        static void readDATA0();
+        static void readDATA1();
+        static bool processReceivedData();
+        static unsigned long parseCardCode (
+            volatile unsigned long *codehigh,
+            volatile unsigned long *codelow,
+            char bitlength
+        );
+        static char translateEnterEscapeKeyPress(char originalKeyPress);
+
+        static volatile unsigned long     _cardTempHigh;
+        static volatile unsigned long     _cardTemp;
+        static volatile unsigned long     _lastBitReceivedTimeMS;
+        static volatile int               _bitCount;
+        static int                        _wiegandType;
+        static unsigned long              _code;
+        static volatile bool              _cardDataReady;
+};
+
+/*
+ * Wiegand Data Packet Sizes
+ */
+enum WiegandDataPacketSizes {
+    // Wiegand Keypress 4-bit type
+    KEYPRESS_4BIT = 4,
+    // Wiegand Keypress 8-bit type (4-bit key with integrity check)
+    KEYPRESS_8BIT = 8,
+    // Wiegand 26 type (without parity bits)
+    DATA_24BIT = 24,
+    // Wiegand 26 type (with parity bits)
+    DATA_26BIT = 26,
+    // Wiegand 34 type (without parity bits)
+    DATA_32BIT = 32,
+    // Wiegand 34 type (with parity bits)
+    DATA_34BIT = 34,
 };
 
 #endif

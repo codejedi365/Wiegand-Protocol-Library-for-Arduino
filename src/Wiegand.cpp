@@ -1,205 +1,233 @@
+/*********************************
+ * FILE: Wiegand.cpp
+ *********************************/
+
 #include "Wiegand.h"
 
 #if defined(ESP8266)
     #define INTERRUPT_ATTR ICACHE_RAM_ATTR
 #elif defined(ESP32)
-	#define INTERRUPT_ATTR IRAM_ATTR
+    #define INTERRUPT_ATTR IRAM_ATTR
 #else
     #define INTERRUPT_ATTR
 #endif
 
-volatile unsigned long WIEGAND::_cardTempHigh=0;
-volatile unsigned long WIEGAND::_cardTemp=0;
-volatile unsigned long WIEGAND::_lastWiegand=0;
-unsigned long WIEGAND::_code=0;
-volatile int WIEGAND::_bitCount=0;	
-int WIEGAND::_wiegandType=0;
+static const WiegandDataPacketSizes dataSizes[] = {
+    KEYPRESS_4BIT, KEYPRESS_8BIT, DATA_24BIT, DATA_26BIT, DATA_32BIT, DATA_34BIT
+};
 
-WIEGAND::WIEGAND()
-{
+volatile unsigned long Wiegand::_cardTempHigh = 0;
+volatile unsigned long Wiegand::_cardTemp = 0;
+volatile unsigned long Wiegand::_lastBitReceivedTimeMS = 0;
+unsigned long Wiegand::_code = 0;
+volatile int Wiegand::_bitCount = 0;
+int Wiegand::_wiegandType = 0;
+
+Wiegand::Wiegand() {
+    // Constructor - no specific initialization needed here as begin() does it
 }
 
-unsigned long WIEGAND::getCode()
-{
-	return _code;
+unsigned long Wiegand::getCode() {
+    return _code;
 }
 
-int WIEGAND::getWiegandType()
-{
-	return _wiegandType;
+int Wiegand::getWiegandType() {
+    return _wiegandType;
 }
 
-bool WIEGAND::available()
-{
-	bool ret;
-	noInterrupts();
-	ret=DoWiegandConversion();
-	interrupts();
-	return ret;
+bool Wiegand::available() {
+    bool ret = false;
+
+    // Prevent interrupts from modifying the current state while checking if a code is available
+    noInterrupts();
+
+    if (_cardDataReady) {
+        interrupts();
+        return true;
+    }
+
+    unsigned long currentTime = millis();
+    unsigned long elapsedTime = currentTime - _lastBitReceivedTimeMS;
+    bool timeoutReached = (elapsedTime > WIEGAND_RECEIVE_TIMEOUT_MS);
+    bool dataReceived = (_bitCount > 0);
+
+    if (dataReceived && timeoutReached) {
+        _cardDataReady = processReceivedData();
+        ret = _cardDataReady;
+        // Reset the buffer after processing data regardless of validity
+        Wiegand::reset();
+    }
+
+    interrupts();
+    return ret;
 }
 
-void WIEGAND::begin()
-{
-	begin(2,3);
+void Wiegand::begin() {
+    begin(WIEGAND_DEFAULT_PIN_D0, WIEGAND_DEFAULT_PIN_D1);
 }
 
-void WIEGAND::begin(int pinD0, int pinD1)
-{
-	_lastWiegand = 0;
-	_cardTempHigh = 0;
-	_cardTemp = 0;
-	_code = 0;
-	_wiegandType = 0;
-	_bitCount = 0;  
-	pinMode(pinD0, INPUT);					// Set D0 pin as input
-	pinMode(pinD1, INPUT);					// Set D1 pin as input
-	
-	attachInterrupt(digitalPinToInterrupt(pinD0), ReadD0, FALLING);  // Hardware interrupt - high to low pulse
-	attachInterrupt(digitalPinToInterrupt(pinD1), ReadD1, FALLING);  // Hardware interrupt - high to low pulse
+void Wiegand::begin(int pinD0, int pinD1) {
+    _code = 0;
+    _wiegandType = 0;
+    Wiegand::reset();
+
+    // Set D0 pin as input
+    pinMode(pinD0, INPUT);
+    // Set D1 pin as input
+    pinMode(pinD1, INPUT);
+
+    // Hardware interrupt - high to low pulse
+    attachInterrupt(digitalPinToInterrupt(pinD0), readDATA0, FALLING);
+    // Hardware interrupt - high to low pulse
+    attachInterrupt(digitalPinToInterrupt(pinD1), readDATA1, FALLING);
 }
 
-INTERRUPT_ATTR void WIEGAND::ReadD0 ()
-{
-	_bitCount++;				// Increament bit count for Interrupt connected to D0
-	if (_bitCount>31)			// If bit count more than 31, process high bits
-	{
-		_cardTempHigh |= ((0x80000000 & _cardTemp)>>31);	//	shift value to high bits
-		_cardTempHigh <<= 1;
-		_cardTemp <<=1;
-	}
-	else
-	{
-		_cardTemp <<= 1;		// D0 represent binary 0, so just left shift card data
-	}
-	_lastWiegand = millis();	// Keep track of last wiegand bit received
+/*
+ * Interrupt Service Routine for Data 0 (binary 0)
+ */
+INTERRUPT_ATTR void Wiegand::readDATA0 () {
+    _lastBitReceivedTimeMS = millis();
+    _cardDataReady = false;
+
+    // If bit count is more than 31, then process high bits
+    if (_bitCount >= DATA_32BIT) {
+        _cardTempHigh <<= 1;
+        _cardTempHigh |= ((_cardTemp & 0x80000000) >> 31);
+    }
+
+    // Shift the current card data left by 1 bit
+    _cardTemp <<= 1;
+
+    // Increment the bit count
+    _bitCount++;
+
+    // --- ISR DEBUG PRINT START ---
+    // String bitCountStr = "bit=" + String(_bitCount);
+    // String bitBufferHighStr = "High=0x" + String(_cardTempHigh, HEX);
+    // String bitBufferLowStr = "Low=0x" + String(_cardTemp, HEX);
+    // String debugMessage = "D0: " + bitCountStr + " " + bitBufferHighStr + " " + bitBufferLowStr;
+    // Serial.println(debugMessage);
+    // --- ISR DEBUG PRINT END ---
 }
 
-INTERRUPT_ATTR void WIEGAND::ReadD1()
-{
-	_bitCount ++;				// Increment bit count for Interrupt connected to D1
-	if (_bitCount>31)			// If bit count more than 31, process high bits
-	{
-		_cardTempHigh |= ((0x80000000 & _cardTemp)>>31);	// shift value to high bits
-		_cardTempHigh <<= 1;
-		_cardTemp |= 1;
-		_cardTemp <<=1;
-	}
-	else
-	{
-		_cardTemp |= 1;			// D1 represent binary 1, so OR card data with 1 then
-		_cardTemp <<= 1;		// left shift card data
-	}
-	_lastWiegand = millis();	// Keep track of last wiegand bit received
+// Interrupt Service Routine for Data 1 (binary 1)
+INTERRUPT_ATTR void Wiegand::readDATA1() {
+    _lastBitReceivedTimeMS = millis();
+    _cardDataReady = false;
+
+    if (_bitCount >= DATA_32BIT) {
+        _cardTempHigh <<= 1;
+        _cardTempHigh |= ((_cardTemp & 0x80000000) >> 31);
+    }
+
+    // Shift the current card data left by 1 bit
+    _cardTemp <<= 1;
+
+    // Set the least significant bit to 1
+    _cardTemp |= 1;
+
+    // Increment the bit count
+    _bitCount++;
+
+    // --- ISR DEBUG PRINT START (COMMENTED OUT FOR ACCURACY TEST) ---
+    // String bitCountStr = "bit=" + String(_bitCount);
+    // String bitBufferHighStr = "High=0x" + String(_cardTempHigh, HEX);
+    // String bitBufferLowStr = "Low=0x" + String(_cardTemp, HEX);
+    // String debugMessage = "D1: " + bitCountStr + " " + bitBufferHighStr + " " + bitBufferLowStr;
+    // Serial.println(debugMessage);
+    // --- ISR DEBUG PRINT END ---
 }
 
-unsigned long WIEGAND::GetCardId (volatile unsigned long *codehigh, volatile unsigned long *codelow, char bitlength)
-{
-	if (bitlength==26)								// EM tag
-		return (*codelow & 0x1FFFFFE) >>1;
+unsigned long Wiegand::parseCardCode(
+    volatile unsigned long *codehigh, volatile unsigned long *codelow, char bitlength
+) {
+    switch (bitlength) {
+        // EM tags
+        case DATA_24BIT:
+            return (*codelow & 0x7FFFFE) >> 1;
+        case DATA_26BIT:
+            return (*codelow & 0x1FFFFFE) >> 1;
 
-	if (bitlength==24)
-		return (*codelow & 0x7FFFFE) >>1;
+        // MiFare
+        case DATA_34BIT:
+            // only need the 2 LSB of the codehigh
+            *codehigh = *codehigh & 0x03;
+            // shift 2 LSB to MSB
+            *codehigh <<= 30;
+            *codelow >>= 1;
+            return *codehigh | *codelow;
 
-	if (bitlength==34)								// Mifare 
-	{
-		*codehigh = *codehigh & 0x03;				// only need the 2 LSB of the codehigh
-		*codehigh <<= 30;							// shift 2 LSB to MSB		
-		*codelow >>=1;
-		return *codehigh | *codelow;
-	}
+        case DATA_32BIT:
+            return (*codelow & 0x7FFFFFFE) >> 1;
 
-	if (bitlength==32) {
-		return (*codelow & 0x7FFFFFFE ) >>1;
-	}
-
-	return *codelow;								// EM tag or Mifare without parity bits
+        default:
+            // This will return _codelow directly for any unhandled bitlength (like 33-bit)
+            return *codelow;
+    }
 }
 
-char translateEnterEscapeKeyPress(char originalKeyPress) {
-	switch(originalKeyPress) {
-	case 0x0b:        // 11 or * key
-		return 0x0d;  // 13 or ASCII ENTER
-
-	case 0x0a:        // 10 or # key
-		return 0x1b;  // 27 or ASCII ESCAPE
-
-	default:
-		return originalKeyPress;
-	}
+char Wiegand::translateEnterEscapeKeyPress(char originalKeyPress) {
+    switch (originalKeyPress) {
+        case KEYPAD_ASTERISK_KEY: return ASCII_ENTER_KEY;
+        case KEYPAD_OCTOTHORPE_KEY: return ASCII_ESCAPE_KEY;
+        default: return originalKeyPress;
+    }
 }
 
-bool WIEGAND::DoWiegandConversion ()
-{
-	unsigned long cardID;
-	unsigned long sysTick = millis();
-	
-	if ((sysTick - _lastWiegand) > 25)								// if no more signal coming through after 25ms
-	{
-		if ((_bitCount==24) || (_bitCount==26) || (_bitCount==32) || (_bitCount==34) || (_bitCount==8) || (_bitCount==4)) 	// bitCount for keypress=4 or 8, Wiegand 26=24 or 26, Wiegand 34=32 or 34
-		{
-			_cardTemp >>= 1;			// shift right 1 bit to get back the real value - interrupt done 1 left shift in advance
-			if (_bitCount>32)			// bit count more than 32 bits, shift high bits right to make adjustment
-				_cardTempHigh >>= 1;
+void Wiegand::reset() {
+    _lastBitReceivedTimeMS = millis();
+    _bitCount = 0;
+    _cardTemp = 0;
+    _cardTempHigh = 0;
+}
 
-			if (_bitCount==8)		// keypress wiegand with integrity
-			{
-				// 8-bit Wiegand keyboard data, high nibble is the "NOT" of low nibble
-				// eg if key 1 pressed, data=E1 in binary 11100001 , high nibble=1110 , low nibble = 0001 
-				char highNibble = (_cardTemp & 0xf0) >>4;
-				char lowNibble = (_cardTemp & 0x0f);
-				_wiegandType=_bitCount;					
-				_bitCount=0;
-				_cardTemp=0;
-				_cardTempHigh=0;
-				
-				if (lowNibble == (~highNibble & 0x0f))		// check if low nibble matches the "NOT" of high nibble.
-				{
-					_code = (int)translateEnterEscapeKeyPress(lowNibble);
-					return true;
-				}
-				else {
-					_lastWiegand=sysTick;
-					_bitCount=0;
-					_cardTemp=0;
-					_cardTempHigh=0;
-					return false;
-				}
+bool Wiegand::processReceivedData() {
 
-				// TODO: Handle validation failure case!
-			}
-			else if (4 == _bitCount) {
-				// 4-bit Wiegand codes have no data integrity check so we just
-				// read the LOW nibble.
-				_code = (int)translateEnterEscapeKeyPress(_cardTemp & 0x0000000F);
+    bool validDataSize = false;
+    for (WiegandDataPacketSizes packetSize : dataSizes) {
+        if (packetSize == _bitCount) {
+            validDataSize = true;
+            break;
+        }
+    }
 
-				_wiegandType = _bitCount;
-				_bitCount = 0;
-				_cardTemp = 0;
-				_cardTempHigh = 0;
+    if (!validDataSize) {
+        // Invalid/unrecognized bit counts
+        return false;
+    }
 
-				return true;
-			}
-			else		// wiegand 26 or wiegand 34
-			{
-				cardID = GetCardId (&_cardTempHigh, &_cardTemp, _bitCount);
-				_wiegandType=_bitCount;
-				_bitCount=0;
-				_cardTemp=0;
-				_cardTempHigh=0;
-				_code=cardID;
-				return true;
-			}
-		}
-		else
-		{
-			// well time over 25 ms and bitCount !=8 , !=26, !=34 , must be noise or nothing then.
-			_lastWiegand=sysTick;
-			_bitCount=0;			
-			_cardTemp=0;
-			_cardTempHigh=0;
-			return false;
-		}	
-	}
-	else
-	return false;
+    switch (_bitCount) {
+        case KEYPRESS_8BIT:
+            // keypress wiegand with integrity
+            // 8-bit Wiegand keyboard data, high nibble is the "NOT" of low nibble
+            // eg if key 1 pressed, data=E1 in binary 11100001 , high nibble=1110 , low nibble = 0001
+            char highNibble = (_cardTemp & 0xf0) >> 4;
+            char lowNibble = (_cardTemp & 0x0f);
+
+            // Data Integrity check
+            if (lowNibble != (~highNibble & 0x0f)) {
+                // Low nibble does not match the inverse of the high nibble!
+                return false;
+            }
+
+            // Update card code to only include the single code
+            _cardTemp = lowNibble;
+            // FALLTHROUGH LOGIC to be processed as a 4 bit
+
+        case KEYPRESS_4BIT:
+            // 4-bit Wiegand codes have no data integrity check so we just
+            // read the LOW nibble.
+            _code = (int) translateEnterEscapeKeyPress(_cardTemp & 0x0000000F);
+            break;
+
+        default:
+            // Handle rest of the Wiegand cases (26 & 34)
+            _code = parseCardCode(&_cardTempHigh, &_cardTemp, _bitCount);
+    }
+
+    // Set the type based on the bit count
+    _wiegandType = _bitCount;
+
+    // Indicate that valid data has been processed
+    return true;
 }
