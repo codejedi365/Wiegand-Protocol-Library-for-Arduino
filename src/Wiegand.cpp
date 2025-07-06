@@ -16,12 +16,13 @@ static const WiegandDataPacketSizes dataSizes[] = {
     KEYPRESS_4BIT, KEYPRESS_8BIT, DATA_24BIT, DATA_26BIT, DATA_32BIT, DATA_34BIT
 };
 
-volatile unsigned long Wiegand::_cardTempHigh = 0;
-volatile unsigned long Wiegand::_cardTemp = 0;
+volatile unsigned long Wiegand::_bitBufferHigh = 0;
+volatile unsigned long Wiegand::_bitBufferLow = 0;
 volatile unsigned long Wiegand::_lastBitReceivedTimeMS = 0;
 unsigned long Wiegand::_code = 0;
 volatile int Wiegand::_bitCount = 0;
 int Wiegand::_wiegandType = 0;
+volatile unsigned long Wiegand::_lastValidDataProcessedTimeMS = 0;
 
 Wiegand::Wiegand() {
     // Constructor - no specific initialization needed here as begin() does it
@@ -41,21 +42,37 @@ bool Wiegand::available() {
     // Prevent interrupts from modifying the current state while checking if a code is available
     noInterrupts();
 
-    if (_cardDataReady) {
-        interrupts();
-        return true;
+    unsigned long elapsedTime;
+    bool timeoutReached;
+    unsigned long currentTime = millis();
+
+    if (_lastValidDataProcessedTimeMS > 0) {
+        // valid card was processed and the cached value is still within its lifetime
+        elapsedTime = currentTime - _lastValidDataProcessedTimeMS;
+        timeoutReached = (elapsedTime > WIEGAND_CODE_LIFETIME_MS);
+
+        if (timeoutReached) {
+            // The last valid data processed time has exceeded the maximum memory timeout
+            Wiegand::clearCodeState();
+
+        } else if (_lastValidDataProcessedTimeMS - _lastBitReceivedTimeMS > 0) {
+            // No new data received since last valid data processed, user can safely read the last valid data
+            interrupts();
+            return true;
+        }
     }
 
-    unsigned long currentTime = millis();
-    unsigned long elapsedTime = currentTime - _lastBitReceivedTimeMS;
-    bool timeoutReached = (elapsedTime > WIEGAND_RECEIVE_TIMEOUT_MS);
+    elapsedTime = currentTime - _lastBitReceivedTimeMS;
+    timeoutReached = (elapsedTime > WIEGAND_RECEIVE_TIMEOUT_MS);
     bool dataReceived = (_bitCount > 0);
 
     if (dataReceived && timeoutReached) {
-        _cardDataReady = processReceivedData();
-        ret = _cardDataReady;
+        if ((ret = processReceivedData()) == true) {
+            // valid data was processed, update the last valid data processed timestamp
+            _lastValidDataProcessedTimeMS = currentTime;
+        }
         // Reset the buffer after processing data regardless of validity
-        Wiegand::reset();
+        Wiegand::resetBuffersState();
     }
 
     interrupts();
@@ -67,9 +84,8 @@ void Wiegand::begin() {
 }
 
 void Wiegand::begin(int pinD0, int pinD1) {
-    _code = 0;
-    _wiegandType = 0;
-    Wiegand::reset();
+    Wiegand::clearCodeState();
+    Wiegand::resetBuffersState();
 
     // Set D0 pin as input
     pinMode(pinD0, INPUT);
@@ -87,16 +103,15 @@ void Wiegand::begin(int pinD0, int pinD1) {
  */
 INTERRUPT_ATTR void Wiegand::readDATA0 () {
     _lastBitReceivedTimeMS = millis();
-    _cardDataReady = false;
 
     // If bit count is more than 31, then process high bits
     if (_bitCount >= DATA_32BIT) {
-        _cardTempHigh <<= 1;
-        _cardTempHigh |= ((_cardTemp & 0x80000000) >> 31);
+        _bitBufferHigh <<= 1;
+        _bitBufferHigh |= ((_bitBufferLow & 0x80000000) >> 31);
     }
 
     // Shift the current card data left by 1 bit
-    _cardTemp <<= 1;
+    _bitBufferLow <<= 1;
 
     // Increment the bit count
     _bitCount++;
@@ -113,18 +128,17 @@ INTERRUPT_ATTR void Wiegand::readDATA0 () {
 // Interrupt Service Routine for Data 1 (binary 1)
 INTERRUPT_ATTR void Wiegand::readDATA1() {
     _lastBitReceivedTimeMS = millis();
-    _cardDataReady = false;
 
     if (_bitCount >= DATA_32BIT) {
-        _cardTempHigh <<= 1;
-        _cardTempHigh |= ((_cardTemp & 0x80000000) >> 31);
+        _bitBufferHigh <<= 1;
+        _bitBufferHigh |= ((_bitBufferLow & 0x80000000) >> 31);
     }
 
     // Shift the current card data left by 1 bit
-    _cardTemp <<= 1;
+    _bitBufferLow <<= 1;
 
     // Set the least significant bit to 1
-    _cardTemp |= 1;
+    _bitBufferLow |= 1;
 
     // Increment the bit count
     _bitCount++;
@@ -138,7 +152,7 @@ INTERRUPT_ATTR void Wiegand::readDATA1() {
     // --- ISR DEBUG PRINT END ---
 }
 
-unsigned long Wiegand::parseCardCode(
+unsigned long Wiegand::parseCardData(
     volatile unsigned long *codehigh, volatile unsigned long *codelow, char bitlength
 ) {
     switch (bitlength) {
@@ -168,17 +182,23 @@ unsigned long Wiegand::parseCardCode(
 
 char Wiegand::translateEnterEscapeKeyPress(char originalKeyPress) {
     switch (originalKeyPress) {
-        case KEYPAD_ASTERISK_KEY: return ASCII_ENTER_KEY;
-        case KEYPAD_OCTOTHORPE_KEY: return ASCII_ESCAPE_KEY;
+        case WIEGAND_KEYPAD_ASTERISK_KEY: return ASCII_ENTER_KEY;
+        case WIEGAND_KEYPAD_OCTOTHORPE_KEY: return ASCII_ESCAPE_KEY;
         default: return originalKeyPress;
     }
 }
 
-void Wiegand::reset() {
-    _lastBitReceivedTimeMS = millis();
+void Wiegand::resetBuffersState() {
+    _lastBitReceivedTimeMS = 0;
     _bitCount = 0;
-    _cardTemp = 0;
-    _cardTempHigh = 0;
+    _bitBufferLow = 0;
+    _bitBufferHigh = 0;
+}
+
+void Wiegand::clearCodeState() {
+    _code = 0;
+    _wiegandType = 0;
+    _lastValidDataProcessedTimeMS = 0;
 }
 
 bool Wiegand::processReceivedData() {
@@ -222,7 +242,7 @@ bool Wiegand::processReceivedData() {
 
         default:
             // Handle rest of the Wiegand cases (26 & 34)
-            _code = parseCardCode(&_cardTempHigh, &_cardTemp, _bitCount);
+            _code = parseCardData(&_bitBufferHigh, &_bitBufferLow, _bitCount);
     }
 
     // Set the type based on the bit count
