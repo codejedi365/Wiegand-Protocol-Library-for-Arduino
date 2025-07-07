@@ -114,13 +114,23 @@ class Wiegand {
     private:
         static void readDATA0();
         static void readDATA1();
-        static bool processReceivedData();
         static unsigned long parseCardData (
-            volatile unsigned long *codehigh,
-            volatile unsigned long *codelow,
-            char bitlength
+            volatile unsigned long codehigh,
+            volatile unsigned long codelow,
+            byte bitlength
         );
-        static char translateEnterEscapeKeyPress(char originalKeyPress);
+        static char parseKeyPress(char originalKeyPress);
+        static bool processReceivedData();
+        static bool processCardData();
+        static bool processKeyPress();
+        static bool validateKeyPress8Bit(volatile unsigned long data);
+        static bool validateDataParity(
+            volatile unsigned long *data,
+            byte leadingParityBit,
+            byte leadingParityBitLength,
+            byte trailingParityBit,
+            byte trailingParityBitLength
+        );
 
         static volatile unsigned long     _bitBufferHigh;
         static volatile unsigned long     _bitBufferLow;
