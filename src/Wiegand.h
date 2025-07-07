@@ -58,6 +58,17 @@ class Wiegand {
         Wiegand(void (*d0_isr_callback)(), void (*d1_isr_callback)());
 
         /**
+         * Simple Constructor with name
+         *
+         * This constructor initializes the Wiegand Reader with default pins
+         *
+         * @param name Name of the Wiegand reader instance
+         * @param d0_isr_callback global or static callback function for Wiegand DATA0 ISR
+         * @param d1_isr_callback global or static callback function for Wiegand DATA1 ISR
+         */
+        Wiegand(String name, void (*d0_isr_callback)(), void (*d1_isr_callback)());
+
+        /**
          * Constructor
          *
          * @param pinD0 Pin number for Wiegand DATA0
@@ -66,6 +77,22 @@ class Wiegand {
          * @param d1_isr_callback global or static callback function for Wiegand DATA1 ISR
          */
         Wiegand(
+            uint8_t pinD0,
+            uint8_t pinD1,
+            void (*d0_isr_callback)(),
+            void (*d1_isr_callback)()
+        );
+
+        /**
+         * Constructor
+         *
+         * @param pinD0 Pin number for Wiegand DATA0
+         * @param pinD1 Pin number for Wiegand DATA1
+         * @param d0_isr_callback global or static callback function for Wiegand DATA0 ISR
+         * @param d1_isr_callback global or static callback function for Wiegand DATA1 ISR
+         */
+        Wiegand(
+            String name,
             uint8_t pinD0,
             uint8_t pinD1,
             void (*d0_isr_callback)(),
@@ -120,6 +147,20 @@ class Wiegand {
         static void readDATA1(Wiegand* reader);
 
         /**
+         * Gets the ID of the Wiegand reader instance.
+         *
+         * @return The ID of the Wiegand reader instance.
+         */
+        uint16_t getId() const { return _id; }
+
+        /**
+         * Gets the name of the Wiegand reader instance.
+         *
+         * @return The name of the Wiegand reader instance.
+         */
+        String getName() const { return _name; }
+
+        /**
          * Gets the value of the last received Wiegand code.
          *
          * @return The last received Wiegand code as an unsigned long.
@@ -147,7 +188,18 @@ class Wiegand {
          */
         uint8_t getPinDATA1() const { return _pinD1; }
 
+        /**
+         * Sets the name of the Wiegand reader instance.
+         *
+         * @param name The name to set for the Wiegand reader instance.
+         */
+        void setName(const String& name) { _name = name; }
+
     private:
+        static uint16_t _nextId;                        // Static variable to keep track of the next ID for Wiegand readers
+
+        uint16_t        _id;                            // ID for the Wiegand reader instance
+        String          _name;                          // Name of the Wiegand reader instance
         bool            _started;                       // Flag to indicate if the Wiegand reader has begun
         uint8_t         _pinD0;                         // Pin for Wiegand DATA0
         uint8_t         _pinD1;                         // Pin for Wiegand DATA1

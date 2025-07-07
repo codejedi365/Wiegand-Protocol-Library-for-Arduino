@@ -19,13 +19,27 @@ static const WiegandDataPacketSizes dataSizes[] = {
     KEYPRESS_4BIT, KEYPRESS_8BIT, DATA_24BIT, DATA_26BIT, DATA_32BIT, DATA_34BIT
 };
 
+uint16_t Wiegand::_nextId = 1; // Initialize static variable for unique ID assignment
+
 Wiegand::Wiegand(void (*d0_isr_callback)(), void (*d1_isr_callback)()) {
     Wiegand(WIEGAND_DEFAULT_PIN_D0, WIEGAND_DEFAULT_PIN_D1, d0_isr_callback, d1_isr_callback);
+}
+
+Wiegand::Wiegand(String name, void (*d0_isr_callback)(), void (*d1_isr_callback)()) {
+    Wiegand(name, WIEGAND_DEFAULT_PIN_D0, WIEGAND_DEFAULT_PIN_D1, d0_isr_callback, d1_isr_callback);
 }
 
 Wiegand::Wiegand(
     uint8_t pinD0, uint8_t pinD1, void (*d0_isr_callback)(), void (*d1_isr_callback)()
 ) {
+    Wiegand("Wiegand Reader " + String(_id), pinD0, pinD1, d0_isr_callback, d1_isr_callback);
+}
+
+Wiegand::Wiegand(
+    String name, uint8_t pinD0, uint8_t pinD1, void (*d0_isr_callback)(), void (*d1_isr_callback)()
+) {
+    _id = Wiegand::_nextId++;
+    _name = name;
     _pinD0 = pinD0;
     _pinD1 = pinD1;
     _d0_isr_callback = d0_isr_callback;

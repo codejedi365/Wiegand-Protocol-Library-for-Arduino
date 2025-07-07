@@ -24,19 +24,18 @@ static Wiegand wiegandReader1 = Wiegand(
 
 void setup() {
     Serial.begin(BAUD_RATE);
-
-    // Wait for serial to be ready
-    while (!Serial);
-    Serial.println("Wiegand Reader Ready for User Input");
+    while (!Serial);  // Wait for serial to be ready
 
     // Initialize the Wiegand reader with your defined pins
     if (!wiegandReader1.begin()) {
         String err = (
-            "Failed to start interrupt input Wiegand Reader 1 using pins "
-            + String(wiegandReader1.getPinDATA0()) + " and " + String(wiegandReader1.getPinDATA1()));
+            "Failed to start interrupt input for '" + wiegandReader1.getName() + "' using pins "
+            + String(wiegandReader1.getPinDATA0()) + " and " + String(wiegandReader1.getPinDATA1())
+        );
         Serial.println(err);
         return;
     }
+    Serial.println(wiegandReader1.getName() + " Ready for User Input");
 }
 
 
@@ -54,16 +53,22 @@ void check4WiegandData(Wiegand* wiegandReader) {
         wiegandReader->clearCodeState();
 
         // Print the formatted Wiegand data to the serial monitor
-        Serial.println(formatWiegandData(cardCode, wiegandReader->getWiegandType()));
+        Serial.println(
+            formatWiegandData(
+                wiegandReader->getName(), cardCode, wiegandReader->getWiegandType()
+            )
+        );
     }
 }
 
 
-String formatWiegandData(unsigned long cardCode, int wiegandType) {
+String formatWiegandData(String prefix, unsigned long cardCode, int wiegandType) {
     // Format the Wiegand data into a human-readable string
-    // Ex: "Wiegand WG26 Code: 123456789 [0x75bcd15]"
+    // Ex: "Wiegand Reader 1 Code: (WG26) 123456789 [0x75bcd15]"
     String word_parts[] = {
-        "Wiegand WG" + String(wiegandType) + " Code:",
+        prefix,
+        "Code:",
+        "(WG" + String(wiegandType) + ")",
         String(cardCode),
         "[0x" + String(cardCode, HEX) + "]"
     };
