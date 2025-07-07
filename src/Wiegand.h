@@ -48,9 +48,29 @@ class Wiegand {
     public:
 
         /**
-         * Constructor
+         * Simple Constructor
+         *
+         * This constructor initializes the Wiegand Reader with default pins
+         *
+         * @param d0_isr_callback global or static callback function for Wiegand DATA0 ISR
+         * @param d1_isr_callback global or static callback function for Wiegand DATA1 ISR
          */
-        Wiegand();
+        Wiegand(void (*d0_isr_callback)(), void (*d1_isr_callback)());
+
+        /**
+         * Constructor
+         *
+         * @param pinD0 Pin number for Wiegand DATA0
+         * @param pinD1 Pin number for Wiegand DATA1
+         * @param d0_isr_callback global or static callback function for Wiegand DATA0 ISR
+         * @param d1_isr_callback global or static callback function for Wiegand DATA1 ISR
+         */
+        Wiegand(
+            uint8_t pinD0,
+            uint8_t pinD1,
+            void (*d0_isr_callback)(),
+            void (*d1_isr_callback)()
+        );
 
         /**
          * Initializes the Wiegand Reader, sets input pins, & adds interrupt listeners.
@@ -58,7 +78,7 @@ class Wiegand {
          *
          * If you want to use different pins, use the begin(pinD0, pinD1) overload instead.
          */
-        void begin();
+        bool begin();
 
         /**
          * Initializes the Wiegand Reader, sets input pins, & adds interrupts to the falling edge.
@@ -68,7 +88,7 @@ class Wiegand {
          *
          * This function should only be called once, generally during setup().
          */
-        void begin(int pinD0, int pinD1);
+        bool begin(uint8_t pinD0, uint8_t pinD1);
 
         /**
          * Checks if a Wiegand code is available.
@@ -81,64 +101,104 @@ class Wiegand {
         bool available();
 
         /**
-         * Resets the Wiegand state machine and clears any stored data.
-         */
-        static void resetBuffersState();
-
-        /**
          * Clears the last received Wiegand code.
          */
-        static void clearCodeState();
+        void clearCodeState();
+
+        /**
+         * Wiegand DATA0 Interrupt Service Routine (ISR)
+         *
+         * @param reader Pointer to the Wiegand object
+         */
+        static void readDATA0(Wiegand* reader);
+
+        /**
+         * Wiegand DATA1 Interrupt Service Routine (ISR)
+         *
+         * @param reader Pointer to the Wiegand object
+         */
+        static void readDATA1(Wiegand* reader);
 
         /**
          * Gets the value of the last received Wiegand code.
          *
          * @return The last received Wiegand code as an unsigned long.
          */
-        unsigned long getCode();
+        unsigned long getCode() const { return _code; }
 
         /**
          * Gets the type of the last received Wiegand code.
          *
          * @return The type of the last received Wiegand code as an integer.
          */
-        int getWiegandType();
+        uint8_t getWiegandType() const { return _wiegandType; }
 
         /**
-         * Gets the card ID from the last received Wiegand code.
+         * Gets the configured pin for Wiegand DATA0.
          *
-         * @return The card ID as an integer.
+         * @return The pin number for Wiegand DATA0.
          */
-        int getBitCount() { return _bitCount; }
+        uint8_t getPinDATA0() const { return _pinD0; }
+
+        /**
+         * Gets the configured pin for Wiegand DATA1.
+         *
+         * @return The pin number for Wiegand DATA1.
+         */
+        uint8_t getPinDATA1() const { return _pinD1; }
 
     private:
-        static void readDATA0();
-        static void readDATA1();
+        bool            _started;                       // Flag to indicate if the Wiegand reader has begun
+        uint8_t         _pinD0;                         // Pin for Wiegand DATA0
+        uint8_t         _pinD1;                         // Pin for Wiegand DATA1
+        unsigned long   _code;                          // Last received valid Wiegand code
+        uint8_t         _wiegandType;                   // Type of the last received Wiegand code
+        unsigned long   _lastValidDataProcessedTimeMS;  // Timestamp of the last valid data processed
+
+        /**
+         * Callback function for Wiegand DATA0 ISR
+         * This function is called when a Wiegand DATA0 bit is received.
+         * It will be attached to the pin interrupt for DATA0 in the begin() method.
+         */
+        void (*_d0_isr_callback)();
+
+        /**
+         * Callback function for Wiegand DATA1 ISR
+         * This function is called when a Wiegand DATA1 bit is received.
+         * It will be attached to the pin interrupt for DATA1 in the begin() method.
+         */
+        void (*_d1_isr_callback)();
+
+        // All variables that are modified by the ISR must be declared as volatile
+        // to prevent the compiler from optimizing them out or caching their values.
+
+        volatile unsigned long _bitBufferHigh;
+        volatile unsigned long _bitBufferLow;
+        volatile uint8_t _bitCount;
+        volatile unsigned long _lastBitReceivedTimeMS;
+
+        /**
+         * Resets the Wiegand state machine and clears any stored data.
+         */
+        void resetBuffersState();
+
         static unsigned long parseCardData (
-            volatile unsigned long codehigh,
-            volatile unsigned long codelow,
-            byte bitlength
+            unsigned long codehigh,
+            unsigned long codelow,
+            uint8_t bitlength
         );
         static char parseKeyPress(char originalKeyPress);
-        static bool processReceivedData();
-        static bool processCardData();
-        static bool processKeyPress();
-        static bool validateKeyPress8Bit(volatile unsigned long data);
+        bool processReceivedData();
+        bool processCardData();
+        bool processKeyPress();
+        static bool validateKeyPress8Bit(unsigned long data);
         static bool validateDataParity(
-            volatile unsigned long *data,
+            unsigned long data,
             byte leadingParityBit,
-            byte leadingParityBitLength,
+            uint8_t leadingParityBitLength,
             byte trailingParityBit,
-            byte trailingParityBitLength
+            uint8_t trailingParityBitLength
         );
-
-        static volatile unsigned long     _bitBufferHigh;
-        static volatile unsigned long     _bitBufferLow;
-        static volatile unsigned long     _lastBitReceivedTimeMS;
-        static volatile int               _bitCount;
-        static int                        _wiegandType;
-        static unsigned long              _code;
-        static volatile unsigned long     _lastValidDataProcessedTimeMS;
 };
 
 /**

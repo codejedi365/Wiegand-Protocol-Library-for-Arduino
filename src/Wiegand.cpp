@@ -19,35 +19,35 @@ static const WiegandDataPacketSizes dataSizes[] = {
     KEYPRESS_4BIT, KEYPRESS_8BIT, DATA_24BIT, DATA_26BIT, DATA_32BIT, DATA_34BIT
 };
 
-volatile unsigned long Wiegand::_bitBufferHigh = 0;
-volatile unsigned long Wiegand::_bitBufferLow = 0;
-volatile unsigned long Wiegand::_lastBitReceivedTimeMS = 0;
-unsigned long Wiegand::_code = 0;
-volatile int Wiegand::_bitCount = 0;
-int Wiegand::_wiegandType = 0;
-volatile unsigned long Wiegand::_lastValidDataProcessedTimeMS = 0;
-
-Wiegand::Wiegand() {
-    // Constructor - no specific initialization needed here as begin() does it
+Wiegand::Wiegand(void (*d0_isr_callback)(), void (*d1_isr_callback)()) {
+    Wiegand(WIEGAND_DEFAULT_PIN_D0, WIEGAND_DEFAULT_PIN_D1, d0_isr_callback, d1_isr_callback);
 }
 
-unsigned long Wiegand::getCode() {
-    return _code;
-}
-
-int Wiegand::getWiegandType() {
-    return _wiegandType;
+Wiegand::Wiegand(
+    uint8_t pinD0, uint8_t pinD1, void (*d0_isr_callback)(), void (*d1_isr_callback)()
+) {
+    _pinD0 = pinD0;
+    _pinD1 = pinD1;
+    _d0_isr_callback = d0_isr_callback;
+    _d1_isr_callback = d1_isr_callback;
+    _started = false;
+    _code = 0;
+    _bitCount = 0;
+    _wiegandType = 0;
+    _lastBitReceivedTimeMS = 0;
+    _lastValidDataProcessedTimeMS = 0;
+    _bitBufferLow = 0;
+    _bitBufferHigh = 0;
 }
 
 bool Wiegand::available() {
-    bool ret = false;
+    unsigned long elapsedTime;
+    bool timeoutReached;
+    bool isAvailable = false;
+    unsigned long currentTime = millis();
 
     // Prevent interrupts from modifying the current state while checking if a code is available
     noInterrupts();
-
-    unsigned long elapsedTime;
-    bool timeoutReached;
-    unsigned long currentTime = millis();
 
     if (_lastValidDataProcessedTimeMS > 0) {
         // valid card was processed and the cached value is still within its lifetime
@@ -56,7 +56,7 @@ bool Wiegand::available() {
 
         if (timeoutReached) {
             // The last valid data processed time has exceeded the maximum memory timeout
-            Wiegand::clearCodeState();
+            clearCodeState();
 
         } else if (_lastValidDataProcessedTimeMS - _lastBitReceivedTimeMS > 0) {
             // No new data received since last valid data processed, user can safely read the last valid data
@@ -65,59 +65,73 @@ bool Wiegand::available() {
         }
     }
 
+    bool dataReceived = (_bitCount > 0);
     elapsedTime = currentTime - _lastBitReceivedTimeMS;
     timeoutReached = (elapsedTime > WIEGAND_RECEIVE_TIMEOUT_MS);
-    bool dataReceived = (_bitCount > 0);
 
     if (dataReceived && timeoutReached) {
-        if ((ret = processReceivedData()) == true) {
+        if ((isAvailable = processReceivedData()) == true) {
             // valid data was processed, update the last valid data processed timestamp
             _lastValidDataProcessedTimeMS = currentTime;
         }
         // Reset the buffer after processing data regardless of validity
-        Wiegand::resetBuffersState();
+        resetBuffersState();
     }
 
     interrupts();
-    return ret;
+    return isAvailable;
 }
 
-void Wiegand::begin() {
-    begin(WIEGAND_DEFAULT_PIN_D0, WIEGAND_DEFAULT_PIN_D1);
+bool Wiegand::begin() {
+    if (_started) {
+        // If the interrupts are already attached, return false
+        return false;
+    }
+
+    // Reset the state of the Wiegand reader
+    clearCodeState();
+    resetBuffersState();
+
+    // Set D0 & D1 pins as input pins
+    pinMode(_pinD0, INPUT);
+    pinMode(_pinD1, INPUT);
+
+    // Set Hardware interrupts on DATA0 & DATA1 - high to low pulse
+    attachInterrupt(digitalPinToInterrupt(_pinD0), _d0_isr_callback, FALLING);
+    attachInterrupt(digitalPinToInterrupt(_pinD1), _d1_isr_callback, FALLING);
+
+    _started = true;
+    return _started;
 }
 
-void Wiegand::begin(int pinD0, int pinD1) {
-    Wiegand::clearCodeState();
-    Wiegand::resetBuffersState();
+bool Wiegand::begin(uint8_t pinD0, uint8_t pinD1) {
+    if (_started) {
+        // If the interrupts are already attached, return false
+        return false;
+    }
 
-    // Set D0 pin as input
-    pinMode(pinD0, INPUT);
-    // Set D1 pin as input
-    pinMode(pinD1, INPUT);
-
-    // Hardware interrupt - high to low pulse
-    attachInterrupt(digitalPinToInterrupt(pinD0), readDATA0, FALLING);
-    // Hardware interrupt - high to low pulse
-    attachInterrupt(digitalPinToInterrupt(pinD1), readDATA1, FALLING);
+    _pinD0 = pinD0;
+    _pinD1 = pinD1;
+    return begin();
 }
 
 /*
  * Interrupt Service Routine for Data 0 (binary 0)
  */
-INTERRUPT_ATTR void Wiegand::readDATA0 () {
-    _lastBitReceivedTimeMS = millis();
+void Wiegand::readDATA0(Wiegand* reader) {
+    reader->_lastBitReceivedTimeMS = millis();
 
     // If bit count is more than 31, then process high bits
-    if (_bitCount >= DATA_32BIT) {
-        _bitBufferHigh <<= 1;
-        _bitBufferHigh |= ((_bitBufferLow & 0x80000000) >> 31);
+    if (reader->_bitCount >= DATA_32BIT) {
+        reader->_bitBufferHigh <<= 1;
+        reader->_bitBufferHigh |= ((reader->_bitBufferLow & 0x80000000) >> 31);
     }
 
     // Shift the current card data left by 1 bit
-    _bitBufferLow <<= 1;
+    reader->_bitBufferLow <<= 1;
 
     // Increment the bit count
-    _bitCount++;
+    reader->_bitCount++;
 
     // --- ISR DEBUG PRINT START ---
     // String bitCountStr = "bit=" + String(_bitCount);
@@ -128,23 +142,22 @@ INTERRUPT_ATTR void Wiegand::readDATA0 () {
     // --- ISR DEBUG PRINT END ---
 }
 
-// Interrupt Service Routine for Data 1 (binary 1)
-INTERRUPT_ATTR void Wiegand::readDATA1() {
-    _lastBitReceivedTimeMS = millis();
+void Wiegand::readDATA1(Wiegand* reader) {
+    reader->_lastBitReceivedTimeMS = millis();
 
-    if (_bitCount >= DATA_32BIT) {
-        _bitBufferHigh <<= 1;
-        _bitBufferHigh |= ((_bitBufferLow & 0x80000000) >> 31);
+    if (reader->_bitCount >= DATA_32BIT) {
+        reader->_bitBufferHigh <<= 1;
+        reader->_bitBufferHigh |= ((reader->_bitBufferLow & 0x80000000) >> 31);
     }
 
     // Shift the current card data left by 1 bit
-    _bitBufferLow <<= 1;
+    reader->_bitBufferLow <<= 1;
 
     // Set the least significant bit to 1
-    _bitBufferLow |= 1;
+    reader->_bitBufferLow |= 1;
 
     // Increment the bit count
-    _bitCount++;
+    reader->_bitCount++;
 
     // --- ISR DEBUG PRINT START (COMMENTED OUT FOR ACCURACY TEST) ---
     // String bitCountStr = "bit=" + String(_bitCount);
@@ -156,11 +169,11 @@ INTERRUPT_ATTR void Wiegand::readDATA1() {
 }
 
 bool Wiegand::validateDataParity(
-    volatile unsigned long *data,
+    unsigned long data,
     byte leadingParityBit,
-    byte leadingParityBitLength,
+    uint8_t leadingParityBitLength,
     byte trailingParityBit,
-    byte trailingParityBitLength
+    uint8_t trailingParityBitLength
 ) {
     // Initialize parity count to start with the trailing parity bit
     byte trailingParity = trailingParityBit;
@@ -169,11 +182,11 @@ bool Wiegand::validateDataParity(
     byte leadingParity = leadingParityBit;
 
     // Compute the total data length
-    byte total_data_length = leadingParityBitLength + trailingParityBitLength;
+    uint8_t total_data_length = leadingParityBitLength + trailingParityBitLength;
 
     // Calculate parity bits
-    for (byte i = 0; i < total_data_length; i++) {
-        if (*data & (1UL << i)) {
+    for (uint8_t i = 0; i < total_data_length; i++) {
+        if (data & (1UL << i)) {
             if (i < trailingParityBitLength) {
                 // Count bits for trailing parity
                 trailingParity++;
@@ -189,7 +202,7 @@ bool Wiegand::validateDataParity(
 }
 
 unsigned long Wiegand::parseCardData(
-    volatile unsigned long codeHigh, volatile unsigned long codeLow, byte bitLength
+    unsigned long codeHigh, unsigned long codeLow, uint8_t bitLength
 ) {
     switch (bitLength) {
         case DATA_24BIT:
@@ -230,7 +243,7 @@ bool Wiegand::processCardData() {
             // Verify 26-bit Wiegand data parity
             if (
                 !Wiegand::validateDataParity(
-                    &parsedCode, leadingParityBit, standardParityBitLength, trailingParityBit, standardParityBitLength
+                    parsedCode, leadingParityBit, standardParityBitLength, trailingParityBit, standardParityBitLength
                 )
             ) {
                 // Parity check failed
@@ -249,7 +262,7 @@ bool Wiegand::processCardData() {
             // Verify 34-bit Wiegand data parity
             if (
                 !Wiegand::validateDataParity(
-                    &parsedCode, leadingParityBit, standardParityBitLength, trailingParityBit, standardParityBitLength
+                    parsedCode, leadingParityBit, standardParityBitLength, trailingParityBit, standardParityBitLength
                 )
             ) {
                 // Parity check failed
@@ -268,7 +281,7 @@ bool Wiegand::processCardData() {
     return true;
 }
 
-bool Wiegand::validateKeyPress8Bit(volatile unsigned long data) {
+bool Wiegand::validateKeyPress8Bit(unsigned long data) {
     // keypress wiegand with integrity
     // 8-bit Wiegand keyboard data, high nibble is the "NOT" of low nibble
     // eg if key 1 pressed, data=E1 in binary 11100001 , high nibble=1110 , low nibble = 0001
@@ -317,10 +330,14 @@ bool Wiegand::processKeyPress() {
 }
 
 void Wiegand::resetBuffersState() {
+    // To prevent data corruption, disable interrupts briefly when modifying
+    // variables that are also modified by the ISR
+    noInterrupts();
     _lastBitReceivedTimeMS = 0;
     _bitCount = 0;
     _bitBufferLow = 0;
     _bitBufferHigh = 0;
+    interrupts();
 }
 
 void Wiegand::clearCodeState() {
